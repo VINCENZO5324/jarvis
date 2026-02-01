@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+    <title>JARVIS Gesture HUD</title>
+    <style>
+        body { margin: 0; overflow: hidden; background: #000; font-family: 'Courier New', Courier, monospace; }
+        #webcam { position: absolute; width: 100%; height: 100%; object-fit: cover; opacity: 0.3; transform: scaleX(-1); }
+        #ui-overlay { position: absolute; top: 20px; left: 20px; color: #00d2ff; pointer-events: none; text-transform: uppercase; letter-spacing: 2px; }
+        #gesture-status { position: absolute; bottom: 20px; right: 20px; color: #00d2ff; font-size: 12px; text-align: right; }
+        .glitch-text { animation: pulse 2s infinite; text-shadow: 0 0 10px #00d2ff; }
+        @keyframes pulse { 0% { opacity: 0.7; } 50% { opacity: 1; } 100% { opacity: 0.7; } }
+    </style>
+</head>
+<body>
+    <video id="webcam" autoplay playsinline></video>
+    <div id="ui-overlay">
+        <div class="glitch-text">System: J.A.R.V.I.S. Online</div>
+        <div id="active-shape">Active: NEURAL CLOUD</div>
+    </div>
+    <div id="gesture-status">
+        [TRACKING ACTIVE]<br>
+        PINCH: SCALE | MOVE: POSITION<br>
+        SPREAD: MORPH SHAPE
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/0.160.0/three.min.js"></script>
+
+    <script>
+        const videoElement = document.getElementById('webcam');
+        const activeShapeText = document.getElementById('active-shape');
+
+        // --- THREE.JS ENGINE ---
+        const scene = new THREE.Scene();
+        const camera = new THREE.PerspectiveCamera(75, window.innerWidth / window.innerHeight, 0.1, 1000);
+        const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        document.body.appendChild(renderer.domElement);
+
+        // Holographic Material
+        const holoMaterial = new THREE.PointsMaterial({
+            color: 0x00d2ff,
+            size: 0.04,
+            transparent: true,
+            blending: THREE.AdditiveBlending,
+            depthWrite: false
+        });
+
+        // Shape Geometries
+        const shapes = [
+            new THREE.IcosahedronGeometry(1.5, 4), // Sphere-ish
+            new THREE.BoxGeometry(2, 2, 2, 10, 10, 10), // Cube
+            new THREE.TorusGeometry(1, 0.4, 16, 100) // Ring
+        ];
+        let currentShapeIdx = 0;
+        let points = new THREE.Points(shapes[currentShapeIdx], holoMaterial);
+        scene.add(points);
+
+        // UI Orbit Ring
+        const ringGeo = new THREE.TorusGeometry(2, 0.01, 16, 100);
+        const ringMat = new THREE.MeshBasicMaterial({ color: 0x00d2ff, transparent: true, opacity: 0.3 });
+        const ring = new THREE.Mesh(ringGeo, ringMat);
+        scene.add(ring);
+
+        camera.position.z = 5;
+
+        // --- HAND TRACKING LOGIC ---
+        let lastShapeSwitch = 0;
+        const hands = new Hands({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}` });
+        hands.setOptions({ maxNumHands: 1, modelComplexity: 1, minDetectionConfidence: 0.6, minTrackingConfidence: 0.6 });
+
+        hands.onResults((results) => {
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const lm = results.multiHandLandmarks[0];
+
+                // 1. Move model to hand (Landmark 9 is the middle finger base)
+                const targetX = (lm[9].x - 0.5) * -10;
+                const targetY = (lm[9].y - 0.5) * -10;
+                points.position.lerp(new THREE.Vector3(targetX, targetY, 0), 0.2);
+                ring.position.copy(points.position);
+
+                // 2. Gesture: Pinch Distance (Thumb vs Index)
+                const pinchDist = Math.hypot(lm[4].x - lm[8].x, lm[4].y - lm[8].y);
+                const scale = THREE.MathUtils.mapLinear(pinchDist, 0.02, 0.2, 0.5, 2.5);
+                points.scale.setScalar(scale);
+
+                // 3. Gesture: Shape Morph (Spread hand wide)
+                const spreadDist = Math.hypot(lm[4].x - lm[20].x, lm[4].y - lm[20].y);
+                if (spreadDist > 0.4 && Date.now() - lastShapeSwitch > 1000) {
+                    currentShapeIdx = (currentShapeIdx + 1) % shapes.length;
+                    points.geometry = shapes[currentShapeIdx];
+                    activeShapeText.innerText = "Active: " + (["ORB", "CHAMBER", "VORTEX"][currentShapeIdx]);
+                    lastShapeSwitch = Date.now();
+                }
+
+                // Auto-rotate for "4D" feel
+                points.rotation.y += 0.01;
+                ring.rotation.x += 0.02;
+            }
+        });
+
+        const cameraFeed = new Camera(videoElement, {
+            onFrame: async () => { await hands.send({ image: videoElement }); },
+            width: 1280, height: 720
+        });
+        cameraFeed.start();
+
+        function animate() {
+            requestAnimationFrame(animate);
+            renderer.render(scene, camera);
+        }
+        animate();
+
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+</html>
